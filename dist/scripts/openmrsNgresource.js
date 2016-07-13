@@ -712,80 +712,156 @@ jshint -W003,-W109, -W106, -W098, -W003, -W068, -W004, -W033, -W030, -W117, -W11
     .module('openmrs-ngresource.restServices')
     .service('FormResService', FormResService);
 
-  FormResService.$inject = ['OpenmrsSettings','$resource'];
+  FormResService.$inject = [
+    'OpenmrsSettings',
+    '$resource',
+    'Restangular',
+    '$q',
+    'FORM_REP'
+  ];
 
-  function FormResService(OpenmrsSettings, $resource) {
+  function FormResService(OpenmrsSettings, $resource, Restangular, $q, FORM_REP) {
+    // Some local variables
+    var _baseRestUrl = OpenmrsSettings.getCurrentRestUrlBase().trim();
+    
     var serviceDefinition;
 
     serviceDefinition = {
       getFormByUuid: getFormByUuid,
-      findPocForms: findPocForms
+      getFormSchemaByUuid: getFormSchemaByUuid,
+      findPocForms: findPocForms,        
+      getFormBaseUrl: getFormBaseUrl,
+      setFormBaseUrl: setFormBaseUrl
     };
 
     return serviceDefinition;
-
-    function getSearchResource() {
-      return $resource(OpenmrsSettings.getCurrentRestUrlBase().trim() + 'form?q=:q&v=custom:(uuid,name,encounterType,version)',
-        { q: '@q' },
-        { query: { method: 'GET', isArray: false } });
+    
+    function getFormBaseUrl() {
+      return _baseRestUrl;
+    }
+    
+    function setFormBaseUrl(url) {
+      _baseRestUrl = url;
+    }
+    
+    function __getResource() {
+      return $resource(getFormBaseUrl() + 'form/:uuid?v=' + FORM_REP,
+        { uuid: '@uuid' },{ query: { method: 'GET', isArray: false } });
+    }
+    
+    function __getSearchResource() {
+      return $resource(getFormBaseUrl() + 'form?q=:q&v=' + FORM_REP,
+        { q: '@q' }, { query: { method: 'GET', isArray: false } });
     }
 
     function findPocForms(searchText, successCallback, failedCallback) {
-      var resource = getSearchResource();
-      return resource.get({ q: searchText }).$promise
+      var promise = __getSearchResource().get({ q: searchText }).$promise
         .then(function(response) {
-          var wrapped = wrapForms(response.results ? response.results : response);
-          // successCallback(response.results ? response.results : response);
-          successCallback(wrapped);
+          return wrapForms(response.results ? response.results : response);
         })
         .catch(function(error) {
-          failedCallback('Error processing request', error);
-          console.error(error);
+          return $q.reject(error);
         });
-    }
-
-    function getResource() {
-      return $resource(OpenmrsSettings.getCurrentRestUrlBase().trim() + 'form/:uuid?v=custom:(uuid,name,encounterType,version)',
-        { uuid: '@uuid' },
-        { query: { method: 'GET', isArray: false } });
+        
+        __handleCallbacks(promise, successCallback, failedCallback);
+        return promise;
     }
 
     function getFormByUuid(uuid, successCallback, failedCallback) {
-      var resource = getResource();
-      return resource.get({ uuid: uuid }).$promise
-        .then(function(response) {
-          var _form = response;
-          var form = {
-            uuid:_form.uuid,
-            name: _form.name,
-            encounterTypeUuid: _form.encounterType.uuid,
-            encounterTypeName: _form.encounterType.display,
-            version: _form.version
-          };
-          successCallback(form);
+      var resource = __getResource();
+      var promise = resource.get({ uuid: uuid }).$promise
+        .then(function(data) {
+          return __toModel(data);
+          // successCallback(__toModel(data));
         })
-        .catch(function(error) {
-          failedCallback('Error processing request', error);
-          console.error(error);
+        .catch(function(err) {
+           return $q.reject(err);
         });
+        
+        __handleCallbacks(promise, successCallback, failedCallback);
+        return promise;
     }
-
+    
+    /**
+     * getFormSchemaByUuid retrieves a form schema with given UUID from OpenMRS
+     * Takes params as an argument which can be either a simple uuid string or
+     * an object having the following properties
+     *  uuid: form schema uuid, i.e resources's valueReference (must be provided)
+     *  caching: true/false (Default true) 
+     *          (whether to enable caching or not for this request (optional))
+     * @param params 
+     * @returns a promise
+     */
+    function getFormSchemaByUuid(params) {
+      if(params === null || params === undefined) {
+        throw new Error('Function expects an argument');
+      }
+      var requestParams = {} , cachingEnabled = true;
+      if(angular.isDefined(params) && typeof params === 'string') {
+           requestParams = { uuid: params };
+      } else {
+        // Assume params is an object otherwise it will fail of course
+        if(params.uuid === null || params.uuid === undefined) {
+          throw new Error('Oops! The parameter object should have uuid property defined!');
+        }
+        requestParams.uuid = params.uuid;
+        if(angular.isDefined(params.caching)) {
+          cachingEnabled = params.caching;
+        } 
+      } //end if else
+      
+      // Do the thing now and return the promise
+      var schema = $resource(getFormBaseUrl() + 'clobdata/:uuid',
+        { uuid: '@uuid' },
+        { query: { method: 'GET', isArray: false, cache: cachingEnabled } });
+        
+      return schema.get(requestParams).$promise
+        .then(function(data) {
+          return data;
+        })
+        .catch(function (err) {
+          return $q.reject(err);
+      });
+    }
+    
     function wrapForms(forms) {
       var wrappedObjects = [];
       _.each(forms, function(_form) {
-        var form = {
-          uuid:_form.uuid,
-          name: _form.name,
-          encounterTypeUuid: _form.encounterType.uuid,
-          encounterTypeName: _form.encounterType.display,
-          version: _form.version
-        };
-        wrappedObjects.push(form);
+        wrappedObjects.push(__toModel(_form));
       });
 
       return wrappedObjects;
     }
-
+    
+    function __toModel(openmrsForm) {
+      return {
+        uuid:openmrsForm.uuid,
+        name: openmrsForm.name,
+        encounterTypeUuid: openmrsForm.encounterType.uuid,
+        encounterTypeName: openmrsForm.encounterType.name,
+        version: openmrsForm.version,
+        published: openmrsForm.published,
+        resources: openmrsForm.resources || []
+      };
+    }
+    
+    // Function to handle the old callback style
+    function __handleCallbacks(promise, successCallback, failedCallback) {
+      if(typeof successCallback === 'function') {
+        // caller passed a success function, call it
+        promise.then(function(data) {
+          successCallback(data);
+        }, function(err) {
+          if(typeof failedCallback === 'function') {
+            failedCallback(err);
+          } else {
+            // just log it
+            console.error(err);
+          }
+        });
+      } 
+    }
+    
   }
 })();
 
@@ -872,12 +948,14 @@ jshint -W117, -W098, -W116, -W003, -W026
                                 'ObsResService',
                                 'DrugResService',
                                 'PatientResRelationshipService',
-                                'PatientRelationshipTypeResService'];
+                                'PatientRelationshipTypeResService',
+                                'OrderResService'];
 
   function OpenmrsRestService(session, authService, PatientResService,
               UserResService, EncounterResService, LocationResService,
               ProviderResService, ObsResService, DrugResService,
-              PatientResRelationshipService,PatientRelationshipTypeResService) {
+              PatientResRelationshipService,PatientRelationshipTypeResService,
+              OrderResService) {
     var service = {
           getSession: getSession,
           getAuthService: getAuthService,
@@ -889,7 +967,8 @@ jshint -W117, -W098, -W116, -W003, -W026
           getObsResService:getObsResService,
           getDrugResService:getDrugResService,
           getPatientRelationshipService:getPatientRelationshipService,
-          getPatientRelationshipTypeService:getPatientRelationshipTypeService
+          getPatientRelationshipTypeService:getPatientRelationshipTypeService,
+          getOrderResService:getOrderResService
         };
 
     return service;
@@ -938,6 +1017,10 @@ jshint -W117, -W098, -W116, -W003, -W026
 
     function getUserDefaultPropertiesService() {
       return UserDefaultPropertiesService;
+    }
+
+    function getOrderResService() {
+      return OrderResService;
     }
   }
 }) ();
@@ -1938,6 +2021,138 @@ function PatientRelationshipTypeResService(OpenmrsSettings,$resource,PatientRela
         });
       }
 }
+})();
+
+/*jshint -W003, -W098, -W117, -W026 */
+(function () {
+    'use strict';
+
+    angular
+        .module('openmrs-ngresource.restServices')
+        .service('OrderResService', OrderResService);
+
+    OrderResService.$inject = ['OpenmrsSettings', '$resource'];
+
+    function OrderResService(OpenmrsSettings, $resource) {
+        var serviceDefinition = {
+            getResource: getResource,
+            getFullResource: getFullResource,
+            getOrderByUuid: getOrderByUuid,
+            saveUpdateOrder: saveUpdateOrder,
+            getOrdersByPatientUuid: getOrdersByPatientUuid,
+            deleteOrder: deleteOrder
+        };
+        return serviceDefinition;
+
+        function getResource() {
+            return $resource(OpenmrsSettings.getCurrentRestUrlBase().trim() + 'order/:uuid',
+                { uuid: '@uuid' },
+                { query: { method: 'GET', isArray: false } });
+        }
+
+        function getDeleteResource() {
+            return $resource(OpenmrsSettings.getCurrentRestUrlBase().trim() + 'order/:uuid?purge',
+                { uuid: '@uuid' },
+                { query: { method: 'GET', isArray: false } });
+        }
+
+        function getFullResource() {
+            var v = 'full';
+            return $resource(OpenmrsSettings.getCurrentRestUrlBase().trim() + 'order/:uuid',
+                { uuid: '@uuid', v: v },
+                { query: { method: 'GET', isArray: false } });
+        }
+
+        function getCustomResource(customResource) {
+            if (customResource === false) return getResource();
+
+            var v = customResource === undefined || customResource === true ?
+                'custom:(display,uuid,orderNumber,accessionNumber,orderReason,orderReasonNonCoded,urgency,action,' +
+                'commentToFulfiller,dateActivated,instructions,orderer:default,encounter:full,patient:default,concept:ref)' : customResource;
+            return $resource(OpenmrsSettings.getCurrentRestUrlBase().trim() + 'order/:uuid',
+                { uuid: '@uuid', v: v },
+                { query: { method: 'GET', isArray: false } });
+        }
+
+        function getOrderByUuid(orderUuid, successCallback, failedCallback, customResource) {
+            var resource = getCustomResource(customResource);
+            return resource.get({ uuid: orderUuid }).$promise
+                .then(function (response) {
+                    successCallback(response);
+                })
+                .catch(function (error) {
+                    if (typeof failedCallback === 'function')
+                        failedCallback('Error processing request', error);
+                    console.error(error);
+                });
+        }
+
+        function getOrdersByPatientUuid(patientUuid, successCallback, failedCallback, customResource) {
+            var resource = getCustomResource(customResource);
+            return resource.get({ patient: patientUuid }).$promise
+                .then(function (response) {
+                    successCallback(response);
+                })
+                .catch(function (error) {
+                    if (typeof failedCallback === 'function')
+                        failedCallback('Error processing request', error);
+                    console.error(error);
+                });
+        }
+
+        function saveUpdateOrder(order, successCallback, failedCallback) {
+            var orderResource = getResource();
+            var _obs = order;
+            if (order.uuid !== undefined) {
+                //update obs
+                var uuid = order.uuid;
+                delete order['uuid'];
+                console.log('Stringified order', JSON.stringify(order));
+                return orderResource.save({ uuid: uuid }, JSON.stringify(order)).$promise
+                    .then(function (data) {
+                        successCallback(data);
+                    })
+                    .catch(function (error) {
+                        console.error('An error occured while saving the order ', error);
+                        if (typeof failedCallback === 'function')
+                            failedCallback('Error processing request', error);
+                    });
+            }
+
+            orderResource = getResource();
+            return orderResource.save(order).$promise
+                .then(function (data) {
+                    successCallback(data);
+                })
+                .catch(function (error) {
+                    console.error('An error occured while saving the order ', error);
+                    if (typeof failedCallback === 'function')
+                        failedCallback('Error processing request', error);
+                });
+
+        }
+
+        function deleteOrder(order, successCallback, failedCallback) {
+            var resource = getDeleteResource();
+            return resource.delete({ uuid: order.uuid }).$promise
+                .then(function (response) {
+                    successCallback(response);
+                })
+                .catch(function (error) {
+                    failedCallback('Error processing request', error);
+                    console.error(error);
+                });
+        }
+    }
+})();
+
+(function() {
+  'use strict';
+  
+  angular
+    .module('openmrs-ngresource.restServices')
+    .constant('FORM_REP', 'custom:(uuid,name,encounterType(uuid,name),version,' +
+                       'published,resources:(uuid,name,dataType,valueReference))');
 })();
 
 /*jshint -W003, -W098, -W117, -W026, -W040, -W004 */
@@ -2994,7 +3209,7 @@ function PatientRelationshipTypeResService(OpenmrsSettings,$resource,PatientRela
           var kenyaNationalId =getIdentifierByType(identifier, 'KENYAN NATIONAL ID NUMBER');
           var amrsMrn =getIdentifierByType(identifier, 'AMRS Medical Record Number');
           var ampathMrsUId=getIdentifierByType(identifier, 'AMRS Universal ID');
-          var cCC=getIdentifierByType(identifier, 'CCC');
+          var cCC=getIdentifierByType(identifier, 'CCC Number');
           if(angular.isUndefined(kenyaNationalId) && angular.isUndefined(amrsMrn) &&
             angular.isUndefined(ampathMrsUId) && angular.isUndefined(cCC))
           {
@@ -3947,6 +4162,480 @@ function patientRelationshipType(uuId_,display_){
       return modelArray;
     }
   }
+})();
+
+/*jshint -W003, -W098, -W117, -W026, -W040, -W004 */
+(function () {
+    'use strict';
+
+    angular
+        .module('openmrs-ngresource.models')
+        .factory('OrderTypeModel', factory);
+
+    factory.$inject = [];
+
+    function factory() {
+        var service = {
+            orderType: orderType,
+            toWrapper: toWrapper,
+            toArrayOfWrappers: toArrayOfWrappers,
+            fromArrayOfWrappers: fromArrayOfWrappers
+        };
+
+        return service;
+
+        //madnatory fields givenName, familyName
+        function orderType(name_, description_, display_, retired_, uuid_) {
+            var modelDefinition = this;
+
+            //initialize private members
+            var _name = name_ ? name_ : '';
+            var _description = description_ ? description_ : '';
+            var _display = display_ ? display_ : '';
+            var _retired = retired_ ? retired_ : false;
+            var _uuid = uuid_ ? uuid_ : '';
+
+
+            modelDefinition.name = function (value) {
+                if (angular.isDefined(value)) {
+                    _name = value;
+                }
+                else {
+                    return _name;
+                }
+            };
+
+            modelDefinition.description = function (value) {
+                if (angular.isDefined(value)) {
+                    _description = value;
+                }
+                else {
+                    return _description;
+                }
+            };
+
+            modelDefinition.display = function (value) {
+                return _display;
+            };
+
+            modelDefinition.retired = function (value) {
+                return _retired;
+            };
+
+            modelDefinition.uuid = function (value) {
+                return _uuid;
+            };
+
+            modelDefinition.fromWrapper = function (value) {
+                return {
+                    uuid: _uuid,
+                    display: _display,
+                    name: _name,
+                    description: _description,
+                    retired: _retired
+                };
+            };
+
+            modelDefinition.getCreateVersion = function (value) {
+                return {
+                    name: _name,
+                    description: _description
+                };
+            };
+
+            modelDefinition.getUpdateVersion = function (value) {
+                return {
+                    name: _name,
+                    description: _description
+                };
+            };
+        }
+
+        function toWrapper(openmrsModel) {
+            return new orderType(openmrsModel.name, openmrsModel.description, 
+            openmrsModel.display, openmrsModel.retired, openmrsModel.uuid);
+        }
+
+        function toArrayOfWrappers(openmrsOrderTypeArray) {
+            var array = [];
+            for (var i = 0; i < openmrsOrderTypeArray.length; i++) {
+                array.push(toWrapper(openmrsOrderTypeArray[i]));
+            }
+            return array;
+        }
+
+        function fromArrayOfWrappers(orderTypeWrappersArray) {
+            var array = [];
+            for (var i = 0; i < orderTypeWrappersArray.length; i++) {
+                array.push(orderTypeWrappersArray[i].fromWrapper());
+            }
+            return array;
+        }
+    }
+})();
+
+/*jshint -W003, -W098, -W117, -W026, -W040, -W004 */
+(function () {
+    'use strict';
+
+    angular
+        .module('openmrs-ngresource.models')
+        .factory('OrderModel', factory);
+
+    factory.$inject = ['ConceptModel', 'EncounterModel'];
+
+    function factory(ConceptModel, EncounterModel) {
+        var service = {
+            order: order,
+            toWrapper: toWrapper,
+            toArrayOfWrappers: toArrayOfWrappers,
+            fromArrayOfWrappers: fromArrayOfWrappers
+        };
+
+        return service;
+
+        function order(encounterUuid_, patientUuid_, conceptUuid_,
+            type_, ordererProviderUuid_, careSettingUuid_, action_, dateActivated_,
+            autoExpireDate_, orderReasonConceptUuid_, orderReasonNonCoded_,
+            instructions_, urgency_, commentToFulfiller_,
+            clinicalHistory_, numberOfRepeats_, uuid_, orderNumber_, display_,
+            patient_, concept_, encounter_, orderer_, careSetting_, orderReason_) {
+            var modelDefinition = this;
+
+            //initialize private members
+            var _encounterUuid = encounterUuid_ ? encounterUuid_ : '';
+            var _patientUuid = patientUuid_ ? patientUuid_ : '';
+            var _conceptUuid = conceptUuid_ ? conceptUuid_ : '';
+            var _type = type_ ? type_ : '';
+            var _ordererProviderUuid = ordererProviderUuid_ ? ordererProviderUuid_ : '';
+            var _careSettingUuid = careSettingUuid_ ? careSettingUuid_ : '';
+            var _action = action_ ? action_ : '';
+            var _dateActivated = dateActivated_ ? dateActivated_ : '';
+            var _autoExpireDate = autoExpireDate_ ? autoExpireDate_ : '';
+            var _orderReasonConceptUuid = orderReasonConceptUuid_ ? orderReasonConceptUuid_ : '';
+            var _orderReasonNonCoded = orderReasonNonCoded_ ? orderReasonNonCoded_ : '';
+            var _instructions = instructions_ ? instructions_ : '';
+            var _urgency = urgency_ ? urgency_ : '';
+            var _commentToFulfiller = commentToFulfiller_ ?
+                commentToFulfiller_ : '';
+            var _clinicalHistory = clinicalHistory_ ? clinicalHistory_ : '';
+            var _numberOfRepeats = numberOfRepeats_ ? numberOfRepeats_ : '';
+
+            var _uuid = uuid_ ? uuid_ : '';
+            var _orderNumber = orderNumber_ ? orderNumber_ : '';
+            var _display = display_ ? display_ : '';
+
+            //complex members
+            var _orderReason = orderReason_ ? ConceptModel.toWrapper(orderReason_) : null;
+            var _patient = patient_ ? patient_ : null;
+            var _concept = concept_ ? ConceptModel.toWrapper(concept_) : null;
+            var _encounter = encounter_ ? new EncounterModel.model(encounter_) : null;
+            var _orderer = orderer_ ? orderer_ : null;
+            var _careSetting = careSetting_ ? careSetting_ : null;
+
+            modelDefinition.encounterUuid = function (value) {
+                if (angular.isDefined(value)) {
+                    _encounterUuid = value;
+                }
+                else {
+                    return _encounterUuid;
+                }
+            };
+
+            modelDefinition.patientUuid = function (value) {
+                if (angular.isDefined(value)) {
+                    _patientUuid = value;
+                }
+                else {
+                    return _patientUuid;
+                }
+            };
+
+            modelDefinition.conceptUuid = function (value) {
+                if (angular.isDefined(value)) {
+                    _conceptUuid = value;
+                }
+                else {
+                    return _conceptUuid;
+                }
+            };
+
+            modelDefinition.type = function (value) {
+                if (angular.isDefined(value)) {
+                    _type = value;
+                }
+                else {
+                    return _type;
+                }
+            };
+
+            modelDefinition.ordererProviderUuid = function (value) {
+                if (angular.isDefined(value)) {
+                    _ordererProviderUuid = value;
+                }
+                else {
+                    return _ordererProviderUuid;
+                }
+            };
+
+             modelDefinition.careSettingUuid = function (value) {
+                if (angular.isDefined(value)) {
+                    _careSettingUuid = value;
+                }
+                else {
+                    return _careSettingUuid;
+                }
+            };
+
+            modelDefinition.action = function (value) {
+                if (angular.isDefined(value)) {
+                    _action = value;
+                }
+                else {
+                    return _action;
+                }
+            };
+
+            modelDefinition.dateActivated = function (value) {
+                if (angular.isDefined(value)) {
+                    _dateActivated = value;
+                }
+                else {
+                    return _dateActivated;
+                }
+            };
+
+            modelDefinition.autoExpireDate = function (value) {
+                if (angular.isDefined(value)) {
+                    _autoExpireDate = value;
+                }
+                else {
+                    return _autoExpireDate;
+                }
+            };
+
+            modelDefinition.orderReasonConceptUuid = function (value) {
+                if (angular.isDefined(value)) {
+                    _orderReasonConceptUuid = value;
+                }
+                else {
+                    return _orderReasonConceptUuid;
+                }
+            };
+
+            modelDefinition.orderReasonNonCoded = function (value) {
+                if (angular.isDefined(value)) {
+                    _orderReasonNonCoded = value;
+                }
+                else {
+                    return _orderReasonNonCoded;
+                }
+            };
+
+            modelDefinition.instructions = function (value) {
+                if (angular.isDefined(value)) {
+                    _instructions = value;
+                }
+                else {
+                    return _instructions;
+                }
+            };
+
+            modelDefinition.urgency = function (value) {
+                if (angular.isDefined(value)) {
+                    _urgency = value;
+                }
+                else {
+                    return _urgency;
+                }
+            };
+
+            modelDefinition.commentToFulfiller = function (value) {
+                if (angular.isDefined(value)) {
+                    _commentToFulfiller = value;
+                }
+                else {
+                    return _commentToFulfiller;
+                }
+            };
+
+             modelDefinition.urgency = function (value) {
+                if (angular.isDefined(value)) {
+                    _urgency = value;
+                }
+                else {
+                    return _urgency;
+                }
+            };
+
+            modelDefinition.clinicalHistory = function (value) {
+                if (angular.isDefined(value)) {
+                    _clinicalHistory = value;
+                }
+                else {
+                    return _clinicalHistory;
+                }
+            };
+
+            modelDefinition.numberOfRepeats = function (value) {
+                if (angular.isDefined(value)) {
+                    _numberOfRepeats = value;
+                }
+                else {
+                    return _numberOfRepeats;
+                }
+            };
+
+            modelDefinition.uuid = function (value) {
+                return _uuid;
+            };
+
+            modelDefinition.display = function (value) {
+                return _display;
+            };
+
+            modelDefinition.orderNumber = function (value) {
+                return _orderNumber;
+            };
+
+            
+
+            modelDefinition.patient = function (value) {
+                if (angular.isDefined(value)) {
+                    _patient = value;
+                }
+                else {
+                    return _patient;
+                }
+            };
+
+            modelDefinition.concept = function (value) {
+                if (angular.isDefined(value)) {
+                    _concept = value;
+                }
+                else {
+                    return _concept;
+                }
+            };
+
+            modelDefinition.encounter = function (value) {
+                if (angular.isDefined(value)) {
+                    _encounter = value;
+                }
+                else {
+                    return _encounter;
+                }
+            };
+
+            modelDefinition.orderReason = function (value) {
+                if (angular.isDefined(value)) {
+                    _orderReason = value;
+                }
+                else {
+                    return _orderReason;
+                }
+            };
+
+            modelDefinition.orderer = function (value) {
+                if (angular.isDefined(value)) {
+                    _orderer = value;
+                }
+                else {
+                    return _orderer;
+                }
+            };
+
+            modelDefinition.careSetting = function (value) {
+                if (angular.isDefined(value)) {
+                    _careSetting = value;
+                }
+                else {
+                    return _careSetting;
+                }
+            };
+
+            modelDefinition.fromWrapper = function (value) {
+                return {
+                    uuid: _uuid,
+                    display: _display,
+                    orderNumber: _orderNumber,
+                    encounter: encounter_,
+                    patient: _patient,
+                    concept: _concept ? _concept.openmrsModel() : null,
+                    type: _type,
+                    orderer: _orderer,
+                    careSetting: _careSetting,
+                    action: _action,
+                    dateActivated: _dateActivated,
+                    autoExpireDate: _autoExpireDate,
+                    orderReason: _orderReason? _orderReason.openmrsModel(): null,
+                    orderReasonNonCoded: _orderReasonNonCoded,
+                    urgency: _urgency,                                        
+                    instructions: _instructions,
+                    commentToFulfiller: _commentToFulfiller,
+                    clinicalHistory: _clinicalHistory,
+                    numberOfRepeats: _numberOfRepeats
+                };
+            };
+
+            modelDefinition.getCreateVersion = function (value) {
+                return {
+                    encounter: _encounterUuid,
+                    patient: _patientUuid,
+                    concept: _conceptUuid,
+                    type: _type,
+                    orderer: _ordererProviderUuid,
+                    careSetting: _careSettingUuid,
+                    action: _action,
+                    dateActivated: _dateActivated, 
+                    autoExpireDate: _autoExpireDate,
+                    orderReason: _orderReasonConceptUuid,
+                    orderReasonNonCoded: _orderReasonNonCoded,
+                    urgency: _urgency,
+                    instructions: _instructions,
+                    commentToFulfiller: _commentToFulfiller,
+                    clinicalHistory: _clinicalHistory,
+                    numberOfRepeats: _numberOfRepeats
+                };
+            };
+
+            modelDefinition.getUpdateVersion = function (value) {
+                return modelDefinition.getCreateVersion();
+            };
+        }
+
+        function toWrapper(openmrsModel) {
+            return new order(
+                openmrsModel.encounter ? openmrsModel.encounter.uuid : null,
+                openmrsModel.patient ? openmrsModel.patient.uuid : null,
+                openmrsModel.concept ? openmrsModel.concept.uuid : null,
+                openmrsModel.type, openmrsModel.orderer.uuid,
+                openmrsModel.careSetting ? openmrsModel.careSetting.uuid : null,
+                openmrsModel.action, openmrsModel.dateActivated, openmrsModel.autoExpireDate,
+                openmrsModel.orderReason ? openmrsModel.orderReason.uuid : null, 
+                openmrsModel.orderReasonNonCoded, openmrsModel.instructions,
+                openmrsModel.urgency, openmrsModel.commentToFulfiller, openmrsModel.clinicalHistory,
+                openmrsModel.numberOfRepeats, openmrsModel.uuid,  openmrsModel.orderNumber, 
+                openmrsModel.display, openmrsModel.patient, openmrsModel.concept, openmrsModel.encounter,
+                openmrsModel.orderer, openmrsModel.careSetting, openmrsModel.orderReason);
+        }
+
+        function toArrayOfWrappers(openmrsOrderArray) {
+            var array = [];
+            for (var i = 0; i < openmrsOrderArray.length; i++) {
+                array.push(toWrapper(openmrsOrderArray[i]));
+            }
+            return array;
+        }
+
+        function fromArrayOfWrappers(orderWrappersArray) {
+            var array = [];
+            for (var i = 0; i < orderWrappersArray.length; i++) {
+                array.push(orderWrappersArray[i].fromWrapper());
+            }
+            return array;
+        }
+    }
 })();
 
 /*jshint -W098, -W030 */
